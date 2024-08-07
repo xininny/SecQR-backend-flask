@@ -1,0 +1,10 @@
+Flask
+pymongo
+torch
+transformers
+dnspython
+tld
+numpy<2
+scikit-learn
+flask-cors
+python-dotenv

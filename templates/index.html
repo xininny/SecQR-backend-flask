@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>머신러닝 모델 배포</title>
+  </head>
+  <body>
+    <h1>URL Prediction</h1>
+    <form id="url-form">
+      <label for="url">Enter URL:</label>
+      <input type="text" id="url" name="url" required />
+      <button type="submit">Predict</button>
+    </form>
+
+    <div id="result">
+      <p id="prediction"></p>
+      <div id="url-info"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="static/js/index.js"></script>
+
+    <script>
+      //event listener
+      document
+        .getElementById("url-form")
+        .addEventListener("submit", function (event) {
+          event.preventDefault();
+          const url = document.getElementById("url").value;
+          getPrediction(url);
+        });
+    </script>
+  </body>
+</html>

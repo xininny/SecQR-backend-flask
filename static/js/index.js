@@ -1,7 +1,7 @@
 async function getPrediction(url) {
   try {
       const response = await axios.post(
-          "http://127.0.0.1:5000/predict",
+          "http://127.0.0.1:8080/predict",
           new URLSearchParams({ url: url })
       );
       console.log("Prediction:", response.data.prediction);
@@ -28,6 +28,3 @@ async function getPrediction(url) {
       document.getElementById("url-info").innerHTML = "";
   }
 }
-
-// Test the function
-getPrediction("mp3raid.com/music/krizz_kaliko.html");

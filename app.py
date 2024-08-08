@@ -11,12 +11,20 @@ import torch
 import pickle
 from dotenv import load_dotenv
 import os
+import logging
 
+# 환경 변수 로드
 load_dotenv()
 
+# Flask 애플리케이션 설정
 app = Flask(__name__)
 CORS(app)
 
+# 로깅 설정
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# MongoDB 설정
 mongo_uri = os.getenv('MONGO_URI')
 db_name = os.getenv('DB_NAME')
 collection_name = os.getenv('COLLECTION_NAME')
@@ -27,10 +35,20 @@ collection = db[collection_name]
 
 collection.create_index('url', unique=True)
 
-model = pickle.load(open('model.pkl', 'rb'))
+# 모델 로드
+try:
+    model = pickle.load(open('model.pkl', 'rb'))
+    logger.info("Model loaded successfully")
+except Exception as e:
+    logger.error(f"Error loading model: {e}")
 
-bert_model = BertModel.from_pretrained('bert-base-uncased', output_hidden_states=True)
-tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+# BERT 모델 및 토크나이저 로드
+try:
+    bert_model = BertModel.from_pretrained('bert-base-uncased', output_hidden_states=True)
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    logger.info("BERT model and tokenizer loaded successfully")
+except Exception as e:
+    logger.error(f"Error loading BERT model or tokenizer: {e}")
 
 def get_url_info(url):
     url_info = {}
@@ -43,6 +61,7 @@ def get_url_info(url):
         url_info['domain_len'] = len(parsed_tld.domain)
         url_info['tld'] = parsed_tld.tld
     except Exception as e:
+        logger.error(f"Error parsing TLD: {e}")
         url_info['domain_len'] = 0
         url_info['tld'] = ""
 
@@ -117,34 +136,49 @@ def jsonify_with_objectid(data):
 
 @app.route('/')
 def home():
-    return render_template('index.html')
+    prediction_api_url = os.getenv('PREDICTION_API_URL')
+    return render_template('index.html', prediction_api_url=prediction_api_url)
 
 @app.route('/predict', methods=['POST'])
 def predict():
     url = request.form['url']
+    app.logger.info(f"Received URL: {url}")
 
-    url_info = collection.find_one({"url": url})
+    try:
+        url_info = collection.find_one({"url": url})
+        app.logger.info(f"URL info from DB: {url_info}")
 
-    if not url_info:
-        url_info = get_url_info(url)
-        features = extract_features(url)
-        prediction = model.predict(features.reshape(1, -1))
+        if not url_info:
+            url_info = get_url_info(url)
+            app.logger.info(f"Extracted URL info: {url_info}")
 
-        url_info['predicted_type'] = prediction[0]
-        try:
-            collection.insert_one(url_info)
-        except Exception as e:
-            app.logger.error(f"Error inserting URL info into DB: {e}")
-    else:
-        prediction = [url_info['predicted_type']]
+            features = extract_features(url)
+            app.logger.info(f"Extracted features: {features}")
 
-    url_info_serializable = jsonify_with_objectid(url_info)
+            prediction = model.predict(features.reshape(1, -1))
+            app.logger.info(f"Prediction: {prediction}")
 
-    return jsonify({
-        'prediction': prediction[0],
-        'url_info': url_info_serializable
-    })
+            url_info['predicted_type'] = prediction[0]
+            try:
+                collection.insert_one(url_info)
+            except Exception as e:
+                app.logger.error(f"Error inserting URL info into DB: {e}")
+        else:
+            prediction = [url_info['predicted_type']]
+
+        url_info_serializable = jsonify_with_objectid(url_info)
+        app.logger.info(f"URL info serializable: {url_info_serializable}")
+
+        return jsonify({
+            'prediction': prediction[0],
+            'url_info': url_info_serializable
+        })
+
+    except Exception as e:
+        app.logger.error(f"Error during prediction: {e}")
+        return jsonify({'error': 'Error during prediction'}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
+    app.logger.info(f"Starting server on port {port}")
     app.run(host='0.0.0.0', port=port, debug=True)

@@ -12,6 +12,7 @@ import pickle
 from dotenv import load_dotenv
 import os
 import logging
+import numpy as np
 
 # 환경 변수 로드
 load_dotenv()
@@ -50,6 +51,7 @@ try:
 except Exception as e:
     logger.error(f"Error loading BERT model or tokenizer: {e}")
 
+# URL 정보 추출 함수 (판단근거로 사용)
 def get_url_info(url):
     url_info = {}
 
@@ -108,21 +110,54 @@ def get_url_info(url):
 
     return url_info
 
+# URL 구성 요소 추출 함수 정의
+def parse_url_components(url):
+    parsed_url = urlparse(url)
+    protocol = parsed_url.scheme
+    domain = parsed_url.netloc
+    path = parsed_url.path
+    params = parsed_url.query
+    subdomain = ".".join(parsed_url.netloc.split(".")[:-2])
+    return protocol, domain, subdomain, path, params
+
+# 각 구성 요소의 특징 추출 함수 정의
+def extract_component_features(protocol, domain, subdomain, path, params):
+    features = {}
+    features['protocol_http'] = 1 if protocol == "http" else 0
+    features['domain_len'] = len(domain)
+    features['has_subdomain'] = 1 if subdomain else 0
+    features['path_len'] = len(path)
+    features['params_len'] = len(params)
+    features['has_ip_address'] = 1 if re.search(r'\d+\.\d+\.\d+\.\d+', domain) else 0
+    return features
+
+def standardize_url(url):
+    if not url.endswith('/'):
+        url = url + '/'
+    return url
+
 def extract_features(url):
+    url = standardize_url(url)
     if not url.startswith(("http://", "https://")):
         url = "http://" + url
 
-    inputs = tokenizer.encode_plus(url, return_tensors='pt', add_special_tokens=True, max_length=512, truncation=True)
+    inputs = tokenizer.encode_plus(url, return_tensors='pt', add_special_tokens=True, max_length=128, truncation=True)
     input_ids = inputs['input_ids']
-
-    attention_mask = inputs.get('attention_mask')
+    attention_mask = inputs.get('attention_mask', None)
 
     with torch.no_grad():
         outputs = bert_model(input_ids, attention_mask=attention_mask)
-        hidden_states = outputs[2]
+        hidden_states = outputs.hidden_states
 
     token_vecs = [torch.mean(hidden_states[layer][0], dim=0) for layer in range(-4, 0)]
-    return torch.stack(token_vecs).numpy()
+    bert_features = torch.stack(token_vecs).numpy().flatten()
+
+    protocol, domain, subdomain, path, params = parse_url_components(url)
+    url_component_features = extract_component_features(protocol, domain, subdomain, path, params)
+    additional_features = np.array(list(url_component_features.values()))
+
+    combined_features = np.concatenate([bert_features, additional_features])
+    return combined_features
 
 def jsonify_with_objectid(data):
     if isinstance(data, dict):
@@ -131,6 +166,10 @@ def jsonify_with_objectid(data):
         return [jsonify_with_objectid(item) for item in data]
     elif isinstance(data, ObjectId):
         return str(data)
+    elif isinstance(data, np.integer):  # numpy 정수형 처리
+        return int(data)
+    elif isinstance(data, np.floating):  # numpy 부동소수점 처리
+        return float(data)
     else:
         return data
 
@@ -158,7 +197,7 @@ def predict():
             prediction = model.predict(features.reshape(1, -1))
             app.logger.info(f"Prediction: {prediction}")
 
-            url_info['predicted_type'] = prediction[0]
+            url_info['predicted_type'] = int(prediction[0])  # numpy 정수형을 일반 int로 변환
             try:
                 collection.insert_one(url_info)
             except Exception as e:
@@ -170,7 +209,7 @@ def predict():
         app.logger.info(f"URL info serializable: {url_info_serializable}")
 
         return jsonify({
-            'prediction': prediction[0],
+            'prediction': int(prediction[0]),  # numpy 정수형을 일반 int로 변환
             'url_info': url_info_serializable
         })
 

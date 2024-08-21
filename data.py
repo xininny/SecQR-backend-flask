@@ -35,7 +35,8 @@ data['type_code'] = data["type"].map(label_mapping)
 data = data.drop(columns=['type'])
 print(data['type_code'].value_counts())
 
-data = data[:100000]
+# data = data[:100000]
+data = data[:10000]
 print(data['type_code'].value_counts())
 
 # BERT 모델 로드
@@ -45,6 +46,73 @@ print("model load")
 # BERT 토크나이저 준비
 tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 print("tokenizer")
+
+# URL 구성 요소 추출 함수 정의
+def parse_url_components(url):
+    # URL 파싱
+    parsed_url = urlparse(url)
+    
+    # 구성 요소 추출
+    protocol = parsed_url.scheme
+    domain = parsed_url.netloc
+    path = parsed_url.path
+    params = parsed_url.query
+    subdomain = ".".join(parsed_url.netloc.split(".")[:-2])
+    
+    return protocol, domain, subdomain, path, params
+
+
+# 각 구성 요소의 특징 추출 함수 정의
+def extract_component_features(protocol, domain, subdomain, path, params):
+    features = {}
+    
+    # 프로토콜: http/https
+    features['protocol_http'] = 1 if protocol == "http" else 0
+    
+    # 도메인 길이
+    features['domain_len'] = len(domain)
+    
+    # 서브도메인 존재 여부
+    features['has_subdomain'] = 1 if subdomain else 0
+    
+    # 경로 길이
+    features['path_len'] = len(path)
+    
+    # 파라미터 길이
+    features['params_len'] = len(params)
+    
+    # IP 주소 포함 여부
+    features['has_ip_address'] = 1 if re.search(r'\d+\.\d+\.\d+\.\d+', domain) else 0
+    
+    return features
+
+# URL 특징 추출 함수 정의
+def extract_features(url):
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+
+    # BERT 인코딩
+    inputs = tokenizer.encode_plus(url, return_tensors='pt', add_special_tokens=True, max_length=128, truncation=True)
+    input_ids = inputs['input_ids']
+    attention_mask = inputs.get('attention_mask', None)
+
+    with torch.no_grad():
+        outputs = bert_model(input_ids, attention_mask=attention_mask)
+        hidden_states = outputs[2]
+
+    token_vecs = [torch.mean(hidden_states[layer][0], dim=0) for layer in range(-4, 0)]
+    bert_features = torch.stack(token_vecs).numpy().flatten()
+
+    # URL 구성 요소별 특징 추출
+    protocol, domain, subdomain, path, params = parse_url_components(url)
+    url_component_features = extract_component_features(protocol, domain, subdomain, path, params)
+    additional_features = np.array(list(url_component_features.values()))
+    
+    # 특징 결합
+    combined_features = np.concatenate([bert_features, additional_features])
+    
+    return combined_features
+
 
 # 추가적인 URL 특징 추출 함수 정의
 def get_url_info(url):
@@ -120,67 +188,41 @@ def get_url_info(url):
     
     return url_info
 
-# URL 특징 추출 함수 정의
-def extract_features(url):
-    start_time = time.time()
-    if not url.startswith(("http://", "https://")):
-        url = "http://" + url
+# 데이터셋 준비
+X = features
+y = data['type_code'].values
 
-    inputs = tokenizer.encode_plus(url, return_tensors='pt', add_special_tokens=True, max_length=128, truncation=True)
-    input_ids = inputs['input_ids']
-    attention_mask = inputs.get('attention_mask', None)
+# 학습 데이터와 나머지 데이터(테스트 + 검증)
+X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.4, random_state=42)
 
-    with torch.no_grad():
-        outputs = bert_model(input_ids, attention_mask=attention_mask)
-        hidden_states = outputs[2]
+# 테스트와 검증 데이터
+X_test, X_val, y_test, y_val = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
 
-    token_vecs = [torch.mean(hidden_states[layer][0], dim=0) for layer in range(-4, 0)]
-    bert_features = torch.stack(token_vecs).numpy().flatten()
-
-    additional_features_dict = get_url_info(url)
-    additional_features = np.array(list(additional_features_dict.values()))
-    
-    combined_features = np.concatenate([bert_features, additional_features])
-    
-    end_time = time.time()
-    return combined_features
-
-# 모든 URL에 대해 특징 추출
-features = np.array([extract_features(url) for url in tqdm(data["url"])])
-print("features 추출 완료")
-
-features_reshaped = features.reshape((features.shape[0], -1))
-type_code_reshaped = data["type_code"].values.reshape((-1, 1))
-
-print("features_reshaped shape:", features_reshaped.shape)
-print("type_code_reshaped shape:", type_code_reshaped.shape)
-
-dataset = np.hstack([features_reshaped, type_code_reshaped])
-
-X = dataset[:, :-1]
-y = dataset[:, -1]
-
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-print(X)
-print(y_train)
-
+#데이터 불균형 처리 (오버샘플링)
+# SMOTE를 사용하여 학습 데이터를 오버샘플링
 sm = SMOTE(random_state=42)
 X_train, y_train = sm.fit_resample(X_train, y_train)
 
-print("model 시작")
-model = HistGradientBoostingClassifier()
 
+print("model 시작")
+max_bins = 255  # 히스토그램의 구간 수
+
+model = HistGradientBoostingClassifier()
 print("model fit중")
 model.fit(X_train, y_train)
 
-score = model.score(X_test, y_test)
-print("X_test 정확도 : ", score)
+# 검증 데이터 모델 성능 평가
+y_val_pred = model.predict(X_val)
+val_accuracy = accuracy_score(y_val, y_val_pred)
+print("모델 검증 정확도(y_val):", val_accuracy)
+print(classification_report(y_val, y_val_pred))
 
-y_pred = model.predict(X_test)
-accuracy = accuracy_score(y_test, y_pred)
-print("모델의 정확도(y_test):", accuracy)
+# 최종 모델 성능 평가
+y_test_pred = model.predict(X_test)
+test_accuracy = accuracy_score(y_test, y_test_pred)
+print("모델 최종 테스트 정확도(y_test):", test_accuracy)
+print(classification_report(y_test, y_test_pred))
 
-print(classification_report(y_test, y_pred))
 
+# 모델 저장
 pickle.dump(model, open('model.pkl', 'wb'))
